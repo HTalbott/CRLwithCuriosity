@@ -1,0 +1,100 @@
+2026-03-24 23:43:21.942357: W external/xla/xla/service/hlo_rematerialization.cc:2941] Can't reduce memory use below -3.10GiB (-3324917707 bytes) by rematerialization; only reduced to 16.19GiB (17380834544 bytes), down from 16.19GiB (17380834576 bytes) originally
+2026-03-24 23:43:34.653346: W external/tsl/tsl/framework/bfc_allocator.cc:482] Allocator (GPU_0_bfc) ran out of memory trying to allocate 5.37GiB (rounded to 5765120000)requested by op 
+2026-03-24 23:43:34.653529: W external/tsl/tsl/framework/bfc_allocator.cc:494] ************************************************************************____________________________
+E0324 23:43:34.654122    9548 pjrt_stream_executor_client.cc:2804] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 5765120000 bytes.
+BufferAssignment OOM Debugging.
+BufferAssignment stats:
+             parameter allocation:    5.38GiB
+              constant allocation:     5.7KiB
+        maybe_live_out allocation:    5.38GiB
+     preallocated temp allocation:    5.43GiB
+  preallocated temp fragmentation:         0B (0.00%)
+                 total allocation:   16.19GiB
+Peak buffers:
+        Buffer 1:
+                Size: 5.37GiB
+                XLA Label: fusion
+                Shape: f32[5000,512,563]
+                ==========================
+
+        Buffer 2:
+                Size: 5.37GiB
+                Entry Parameter Subshape: f32[5000,512,563]
+                ==========================
+
+        Buffer 3:
+                Size: 5.37GiB
+                Operator: op_name="pmap(prefill_replay_buffer)/jit(main)/while/body/jit(insert_internal)/cond/branch_1_fun/jit(_roll_dynamic)/dynamic_slice[slice_sizes=(5000, 512, 563)]" source_file="/home/jackytu/eecs567/JaxGCRL/jaxgcrl/utils/replay_buffer.py" source_line=206
+                XLA Label: fusion
+                Shape: f32[5000,512,563]
+                ==========================
+
+        Buffer 4:
+                Size: 542.0KiB
+                Entry Parameter Subshape: f32[512,271]
+                ==========================
+
+        Buffer 5:
+                Size: 542.0KiB
+                Entry Parameter Subshape: f32[512,271]
+                ==========================
+
+        Buffer 6:
+                Size: 542.0KiB
+                XLA Label: fusion
+                Shape: f32[138752]
+                ==========================
+
+        Buffer 7:
+                Size: 542.0KiB
+                Operator: op_name="pmap(prefill_replay_buffer)/jit(main)/while/body/while/body/jit(f)/jit(_where)/select_n" source_file="/home/jackytu/eecs567/JaxGCRL/jaxgcrl/agents/td3/td3.py" source_line=72
+                XLA Label: fusion
+                Shape: f32[512,271]
+                ==========================
+
+        Buffer 8:
+                Size: 288.0KiB
+                Entry Parameter Subshape: f32[288,256]
+                ==========================
+
+        Buffer 9:
+                Size: 288.0KiB
+                XLA Label: fusion
+                Shape: f32[288,256]
+                ==========================
+
+        Buffer 10:
+                Size: 288.0KiB
+                XLA Label: fusion
+                Shape: f32[288,256]
+                ==========================
+
+        Buffer 11:
+                Size: 288.0KiB
+                XLA Label: fusion
+                Shape: f32[288,256]
+                ==========================
+
+        Buffer 12:
+                Size: 288.0KiB
+                XLA Label: fusion
+                Shape: f32[288,256]
+                ==========================
+
+        Buffer 13:
+                Size: 288.0KiB
+                XLA Label: fusion
+                Shape: f32[288,256]
+                ==========================
+
+        Buffer 14:
+                Size: 288.0KiB
+                XLA Label: fusion
+                Shape: f32[288,256]
+                ==========================
+
+        Buffer 15:
+                Size: 288.0KiB
+                XLA Label: fusion
+                Shape: f32[288,256]
+                ==========================

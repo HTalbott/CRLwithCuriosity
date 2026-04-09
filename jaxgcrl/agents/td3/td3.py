@@ -208,8 +208,8 @@ class TD3:
     train_step_multiplier: int = 1
     unroll_length: int = 50
     policy_delay: int = 2
-    noise_clip: int = 0.5
-    smoothing_noise: int = 0.2
+    noise_clip: float = 0.5
+    smoothing_noise: float = 0.2
     exploration_noise: float = 0.4
     use_her: bool = False
 
