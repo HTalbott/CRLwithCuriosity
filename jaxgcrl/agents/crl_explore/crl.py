@@ -127,8 +127,12 @@ def save_params(path: str, params: Any):
 
 
 @dataclass
-class CRL:
-    """Contrastive Reinforcement Learning (CRL) agent."""
+class CRL_EXPLORE:
+    """CRL with representation-space exploration bonus in the actor loss.
+
+    Adds a novelty term that encourages the actor to visit states whose
+    φ(s,a) embedding is far from the batch centroid.  The bonus is linearly
+    annealed to zero over ``exploration_anneal_frac`` of total training."""
 
     policy_lr: float = 3e-4
     critic_lr: float = 3e-4
@@ -161,6 +165,12 @@ class CRL:
 
     contrastive_loss_fn: Literal["fwd_infonce", "sym_infonce", "bwd_infonce", "binary_nce"] = "fwd_infonce"
     energy_fn: Literal["norm", "l2", "dot", "cosine"] = "norm"
+
+    exploration_coeff: float = 0.1
+    """Initial weight of the novelty bonus in the actor loss."""
+
+    exploration_anneal_frac: float = 0.5
+    """Fraction of total training over which to linearly anneal the bonus to 0."""
 
     def check_config(self, config):
         """
@@ -202,11 +212,17 @@ class CRL:
         env_steps_per_actor_step = config.num_envs * self.unroll_length
         num_prefill_env_steps = self.min_replay_size * config.num_envs
         num_prefill_actor_steps = np.ceil(self.min_replay_size / self.unroll_length)
-        num_training_steps_per_epoch = (config.total_env_steps - num_prefill_env_steps) // (
-            config.num_evals * env_steps_per_actor_step
+        num_training_steps_per_epoch = int(
+            (config.total_env_steps - num_prefill_env_steps)
+            // (config.num_evals * env_steps_per_actor_step)
         )
+        remaining_actor_steps = int(np.ceil(
+            (config.total_env_steps - num_prefill_env_steps
+             - num_training_steps_per_epoch * config.num_evals * env_steps_per_actor_step)
+            / env_steps_per_actor_step
+        ))
 
-        assert num_training_steps_per_epoch > 0, (
+        assert num_training_steps_per_epoch > 0 or remaining_actor_steps > 0, (
             "total_env_steps too small for given num_envs and episode_length"
         )
 
@@ -501,31 +517,32 @@ class CRL:
             ), metrics
 
         @jax.jit
+        @jax.jit
+        def _scan_body(carry, unused_t):
+            ts, es, bs, k = carry
+            k, train_key = jax.random.split(k, 2)
+            (
+                (
+                    ts,
+                    es,
+                    bs,
+                ),
+                metrics,
+            ) = training_step(ts, es, bs, train_key)
+            return (ts, es, bs, k), metrics
+
         def training_epoch(
             training_state,
             env_state,
             buffer_state,
             key,
+            length=num_training_steps_per_epoch,
         ):
-            @jax.jit
-            def f(carry, unused_t):
-                ts, es, bs, k = carry
-                k, train_key = jax.random.split(k, 2)
-                (
-                    (
-                        ts,
-                        es,
-                        bs,
-                    ),
-                    metrics,
-                ) = training_step(ts, es, bs, train_key)
-                return (ts, es, bs, k), metrics
-
             (training_state, env_state, buffer_state, key), metrics = jax.lax.scan(
-                f,
+                _scan_body,
                 (training_state, env_state, buffer_state, key),
                 (),
-                length=num_training_steps_per_epoch,
+                length=length,
             )
 
             metrics["buffer_current_size"] = replay_buffer.size(buffer_state)
@@ -547,14 +564,21 @@ class CRL:
         )
 
         training_walltime = 0
+        num_epochs = config.num_evals + (1 if remaining_actor_steps > 0 else 0)
         logging.info("starting training....")
-        for ne in range(config.num_evals):
+        for ne in range(num_epochs):
             t = time.time()
 
             key, epoch_key = jax.random.split(key)
 
+            if ne == config.num_evals:
+                epoch_len = remaining_actor_steps
+            else:
+                epoch_len = num_training_steps_per_epoch
+
             training_state, env_state, buffer_state, metrics = training_epoch(
-                training_state, env_state, buffer_state, epoch_key
+                training_state, env_state, buffer_state, epoch_key,
+                length=epoch_len,
             )
 
             metrics = jax.tree_util.tree_map(jnp.mean, metrics)
@@ -563,7 +587,7 @@ class CRL:
             epoch_training_time = time.time() - t
             training_walltime += epoch_training_time
 
-            sps = (env_steps_per_actor_step * num_training_steps_per_epoch) / epoch_training_time
+            sps = (env_steps_per_actor_step * epoch_len) / epoch_training_time
             metrics = {
                 "training/sps": sps,
                 "training/walltime": training_walltime,
@@ -588,18 +612,22 @@ class CRL:
             )
 
             if config.checkpoint_logdir:
-                # Save current policy and critic params.
-                params = (
+                ckpt_params = (
                     training_state.alpha_state.params,
                     training_state.actor_state.params,
                     training_state.critic_state.params,
                 )
                 path = f"{config.checkpoint_logdir}/step_{int(training_state.env_steps)}.pkl"
-                save_params(path, params)
+                save_params(path, ckpt_params)
 
         total_steps = current_step
         assert total_steps >= config.total_env_steps
 
         logging.info("total steps: %s", total_steps)
 
+        params = (
+            training_state.alpha_state.params,
+            training_state.actor_state.params,
+            training_state.critic_state.params,
+        )
         return make_policy, params, metrics

@@ -139,6 +139,7 @@ class TrajectoryUniformSamplingQueue:
         sample_batch_size: int,
         num_envs: int,
         episode_length: int,
+        shared_time_window: bool = False,
     ):
         self._flatten_fn = jax.vmap(jax.vmap(lambda x: flatten_util.ravel_pytree(x)[0]))
         dummy_flatten, self._unflatten_fn = flatten_util.ravel_pytree(dummy_data_sample)
@@ -151,6 +152,7 @@ class TrajectoryUniformSamplingQueue:
         self._size = 0
         self.num_envs = num_envs
         self.episode_length = episode_length
+        self._shared_time_window = shared_time_window
 
     def init(self, key):
         return ReplayBufferState(
@@ -239,13 +241,26 @@ class TrajectoryUniformSamplingQueue:
         # Sampling envs idxs
         envs_idxs = jax.random.choice(sample_key, jnp.arange(self.num_envs), shape=(shape,), replace=False)
 
-        @functools.partial(jax.jit, static_argnames=("rows", "cols"))
-        def create_matrix(rows, cols, min_val, max_val, rng_key):
-            rng_key, subkey = jax.random.split(rng_key)
-            start_values = jax.random.randint(subkey, shape=(rows,), minval=min_val, maxval=max_val)
-            row_indices = jnp.arange(cols)
-            matrix = start_values[:, jnp.newaxis] + row_indices
-            return matrix
+        if self._shared_time_window:
+            @functools.partial(jax.jit, static_argnames=("rows", "cols"))
+            def create_matrix(rows, cols, min_val, max_val, rng_key):
+                rng_key, subkey = jax.random.split(rng_key)
+                # All envs get the same time window for temporal cohort negatives.
+                start_values = jnp.broadcast_to(
+                    jax.random.randint(subkey, shape=(1,), minval=min_val, maxval=max_val),
+                    (rows,),
+                )
+                row_indices = jnp.arange(cols)
+                matrix = start_values[:, jnp.newaxis] + row_indices
+                return matrix
+        else:
+            @functools.partial(jax.jit, static_argnames=("rows", "cols"))
+            def create_matrix(rows, cols, min_val, max_val, rng_key):
+                rng_key, subkey = jax.random.split(rng_key)
+                start_values = jax.random.randint(subkey, shape=(rows,), minval=min_val, maxval=max_val)
+                row_indices = jnp.arange(cols)
+                matrix = start_values[:, jnp.newaxis] + row_indices
+                return matrix
 
         @jax.jit
         def create_batch(arr_2d, indices):
@@ -261,15 +276,6 @@ class TrajectoryUniformSamplingQueue:
             sample_key,
         )
 
-        """
-        The function create_batch will be called for every envs_idxs of buffer_state.data and every row of matrix.
-        Because every row of matrix has consecutive indices of self.episode_length, for every
-        envs_idx of envs_idxs, we will sample a random self.episode_length length sequence from 
-        buffer_state.data[:, envs_idx, :]. But I don't think the code ensures that this sequence 
-        won't be across episodes?
-
-        flatten_batch takes care of this
-        """
         batch = create_batch_vmaped(buffer_state.data[:, envs_idxs, :], matrix)
         transitions = self._unflatten_fn(batch)
         return buffer_state.replace(key=key), transitions

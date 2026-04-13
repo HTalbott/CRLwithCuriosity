@@ -86,6 +86,17 @@ def main(config: Config):
         "training/critic_loss",
         "training/entropy",
         "training/sps",
+        "training/ppo_loss",
+        "training/policy_loss",
+        "training/v_loss",
+        "training/entropy_loss",
+        "training/contrastive_loss",
+        "training/contrastive_accuracy",
+        "training/critic_loss",
+        "training/categorical_accuracy",
+        "training/crl_actor_loss",
+        "training/hard_pos_weight_ess",
+        "training/hard_pos_weight_max",
     ]
 
     metrics_recorder = MetricsRecorder(

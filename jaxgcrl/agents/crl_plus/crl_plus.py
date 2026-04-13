@@ -24,6 +24,11 @@ from jaxgcrl.utils.replay_buffer import TrajectoryUniformSamplingQueue
 from .losses import update_actor_and_alpha, update_critic
 from .networks import Actor, Encoder
 
+# NOTE: crl_plus reuses the CRL training loop almost verbatim; the only
+# substantive change is `update_critic`, which adds hard-positive reweighting
+# (see losses.py). Kept as a copy rather than a subclass because the
+# `from .losses` relative import would otherwise resolve to the wrong module.
+
 Metrics = types.Metrics
 Env = Union[envs.Env, envs_v1.Env, envs_v1.Wrapper]
 State = Union[envs.State, envs_v1.State]
@@ -127,8 +132,8 @@ def save_params(path: str, params: Any):
 
 
 @dataclass
-class CRL:
-    """Contrastive Reinforcement Learning (CRL) agent."""
+class CRL_PLUS:
+    """CRL with hard-positive reweighted critic."""
 
     policy_lr: float = 3e-4
     critic_lr: float = 3e-4
@@ -140,6 +145,10 @@ class CRL:
 
     # forward CRL logsumexp penalty
     logsumexp_penalty_coeff: float = 0.1
+
+    # Softmax sharpness for hard-positive critic reweighting.
+    # 0.0 recovers vanilla CRL; larger values concentrate on far-apart pairs.
+    hard_positive_beta: float = 1.0
 
     train_step_multiplier: int = 1
 
@@ -162,6 +171,10 @@ class CRL:
     contrastive_loss_fn: Literal["fwd_infonce", "sym_infonce", "bwd_infonce", "binary_nce"] = "fwd_infonce"
     energy_fn: Literal["norm", "l2", "dot", "cosine"] = "norm"
 
+    temporal_cohort_negatives: bool = False
+    """When True, minibatches are formed from the same timestep across all
+    envs, giving harder negatives.  Requires num_envs == batch_size."""
+
     def check_config(self, config):
         """
         episode_length: the maximum length of an episode
@@ -171,6 +184,10 @@ class CRL:
         assert config.num_envs * (config.episode_length - 1) % self.batch_size == 0, (
             "num_envs * (episode_length - 1) must be divisible by batch_size"
         )
+        if self.temporal_cohort_negatives:
+            assert config.num_envs == self.batch_size, (
+                "temporal_cohort_negatives requires num_envs == batch_size"
+            )
 
     def train_fn(
         self,
@@ -202,11 +219,19 @@ class CRL:
         env_steps_per_actor_step = config.num_envs * self.unroll_length
         num_prefill_env_steps = self.min_replay_size * config.num_envs
         num_prefill_actor_steps = np.ceil(self.min_replay_size / self.unroll_length)
-        num_training_steps_per_epoch = (config.total_env_steps - num_prefill_env_steps) // (
-            config.num_evals * env_steps_per_actor_step
+        # Floor the per-epoch count so most epochs don't overshoot, then
+        # compute how many leftover actor steps are needed in a final epoch.
+        num_training_steps_per_epoch = int(
+            (config.total_env_steps - num_prefill_env_steps)
+            // (config.num_evals * env_steps_per_actor_step)
         )
+        remaining_actor_steps = int(np.ceil(
+            (config.total_env_steps - num_prefill_env_steps
+             - num_training_steps_per_epoch * config.num_evals * env_steps_per_actor_step)
+            / env_steps_per_actor_step
+        ))
 
-        assert num_training_steps_per_epoch > 0, (
+        assert num_training_steps_per_epoch > 0 or remaining_actor_steps > 0, (
             "total_env_steps too small for given num_envs and episode_length"
         )
 
@@ -237,6 +262,7 @@ class CRL:
         state_size = train_env.state_dim
         goal_indices_static = tuple(int(i) for i in train_env.goal_indices)
         goal_size = len(goal_indices_static)
+        temporal_cohort = self.temporal_cohort_negatives
         obs_size = state_size + goal_size
         assert obs_size == train_env.observation_size, (
             f"obs_size: {obs_size}, observation_size: {train_env.observation_size}"
@@ -329,6 +355,7 @@ class CRL:
                 sample_batch_size=self.batch_size,
                 num_envs=config.num_envs,
                 episode_length=config.episode_length,
+                shared_time_window=temporal_cohort,
             )
         )
         buffer_state = jax.jit(replay_buffer.init)(buffer_key)
@@ -477,13 +504,24 @@ class CRL:
                 lambda x: jnp.reshape(x, (-1,) + x.shape[2:], order="F"), transitions
             )
 
-            # permute transitions
-            permutation = jax.random.permutation(experience_key2, len(transitions.observation))
-            transitions = jax.tree_util.tree_map(lambda x: x[permutation], transitions)
-            transitions = jax.tree_util.tree_map(
-                lambda x: jnp.reshape(x, (-1, self.batch_size) + x.shape[1:]),
-                transitions,
-            )
+            if temporal_cohort:
+                # Transitions are already grouped by timestep (Fortran-order
+                # reshape puts all envs at the same offset together).  Reshape
+                # into batches and shuffle batch *order* only.
+                transitions = jax.tree_util.tree_map(
+                    lambda x: jnp.reshape(x, (-1, self.batch_size) + x.shape[1:]),
+                    transitions,
+                )
+                batch_perm = jax.random.permutation(experience_key2, transitions.observation.shape[0])
+                transitions = jax.tree_util.tree_map(lambda x: x[batch_perm], transitions)
+            else:
+                # Default: globally permute transitions, then form batches.
+                permutation = jax.random.permutation(experience_key2, len(transitions.observation))
+                transitions = jax.tree_util.tree_map(lambda x: x[permutation], transitions)
+                transitions = jax.tree_util.tree_map(
+                    lambda x: jnp.reshape(x, (-1, self.batch_size) + x.shape[1:]),
+                    transitions,
+                )
 
             # take actor-step worth of training-step
             (
@@ -501,31 +539,31 @@ class CRL:
             ), metrics
 
         @jax.jit
+        def _scan_body(carry, unused_t):
+            ts, es, bs, k = carry
+            k, train_key = jax.random.split(k, 2)
+            (
+                (
+                    ts,
+                    es,
+                    bs,
+                ),
+                metrics,
+            ) = training_step(ts, es, bs, train_key)
+            return (ts, es, bs, k), metrics
+
         def training_epoch(
             training_state,
             env_state,
             buffer_state,
             key,
+            length=num_training_steps_per_epoch,
         ):
-            @jax.jit
-            def f(carry, unused_t):
-                ts, es, bs, k = carry
-                k, train_key = jax.random.split(k, 2)
-                (
-                    (
-                        ts,
-                        es,
-                        bs,
-                    ),
-                    metrics,
-                ) = training_step(ts, es, bs, train_key)
-                return (ts, es, bs, k), metrics
-
             (training_state, env_state, buffer_state, key), metrics = jax.lax.scan(
-                f,
+                _scan_body,
                 (training_state, env_state, buffer_state, key),
                 (),
-                length=num_training_steps_per_epoch,
+                length=length,
             )
 
             metrics["buffer_current_size"] = replay_buffer.size(buffer_state)
@@ -547,14 +585,22 @@ class CRL:
         )
 
         training_walltime = 0
+        num_epochs = config.num_evals + (1 if remaining_actor_steps > 0 else 0)
         logging.info("starting training....")
-        for ne in range(config.num_evals):
+        for ne in range(num_epochs):
             t = time.time()
 
             key, epoch_key = jax.random.split(key)
 
+            # The last epoch is a short remainder if needed.
+            if ne == config.num_evals:
+                epoch_len = remaining_actor_steps
+            else:
+                epoch_len = num_training_steps_per_epoch
+
             training_state, env_state, buffer_state, metrics = training_epoch(
-                training_state, env_state, buffer_state, epoch_key
+                training_state, env_state, buffer_state, epoch_key,
+                length=epoch_len,
             )
 
             metrics = jax.tree_util.tree_map(jnp.mean, metrics)
@@ -563,7 +609,7 @@ class CRL:
             epoch_training_time = time.time() - t
             training_walltime += epoch_training_time
 
-            sps = (env_steps_per_actor_step * num_training_steps_per_epoch) / epoch_training_time
+            sps = (env_steps_per_actor_step * epoch_len) / epoch_training_time
             metrics = {
                 "training/sps": sps,
                 "training/walltime": training_walltime,
@@ -588,18 +634,22 @@ class CRL:
             )
 
             if config.checkpoint_logdir:
-                # Save current policy and critic params.
-                params = (
+                ckpt_params = (
                     training_state.alpha_state.params,
                     training_state.actor_state.params,
                     training_state.critic_state.params,
                 )
                 path = f"{config.checkpoint_logdir}/step_{int(training_state.env_steps)}.pkl"
-                save_params(path, params)
+                save_params(path, ckpt_params)
 
         total_steps = current_step
         assert total_steps >= config.total_env_steps
 
         logging.info("total steps: %s", total_steps)
 
+        params = (
+            training_state.alpha_state.params,
+            training_state.actor_state.params,
+            training_state.critic_state.params,
+        )
         return make_policy, params, metrics

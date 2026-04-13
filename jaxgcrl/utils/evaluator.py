@@ -122,18 +122,8 @@ class ActorEvaluator:
         for fn, suffix in aggregating_fns:
             metrics.update(
                 {
-                    f"eval/episode_{name}{suffix}": (
-                        fn(eval_metrics.episode_metrics[name])
-                        if aggregate_episodes
-                        else eval_metrics.episode_metrics[name]
-                    )
-                    for name in [
-                        "reward",
-                        "success",
-                        "success_easy",
-                        "dist",
-                        "distance_from_origin",
-                    ]
+                    f"eval/episode_{name}{suffix}": (fn(value) if aggregate_episodes else value)
+                    for name, value in eval_metrics.episode_metrics.items()
                 }
             )
 
