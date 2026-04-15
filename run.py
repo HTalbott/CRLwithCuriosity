@@ -97,6 +97,20 @@ def main(config: Config):
         "training/crl_actor_loss",
         "training/hard_pos_weight_ess",
         "training/hard_pos_weight_max",
+        "training/goal_critic_loss",
+        "training/goal_critic_accuracy",
+        "training/goal_success_rate",
+        "training/goal_pos_weight",
+        "training/goal_critic_active",
+        "training/goal_energy",
+        "training/goal_logit",
+        "training/crl_energy",
+        "training/goal_true_pos_rate",
+        "training/goal_true_neg_rate",
+        "training/goal_mean_logit",
+        "training/goal_mean_logit_pos",
+        "training/goal_mean_logit_neg",
+        "training/goal_pred_positive_rate",
     ]
 
     metrics_recorder = MetricsRecorder(
