@@ -1,0 +1,6 @@
+== reacher_20m sweep started 2026-04-21T08:40:47-04:00 (threshold=0.4 metric=eval/episode_success_any) ==
+[2026-04-21T08:40:47-04:00] START crl_rc20_s0 attempt=1
+[2026-04-21T13:35:18-04:00] OK    crl_rc20_s0 attempt=1 evals=200
+[2026-04-21T13:35:18-04:00] START crl_rc20_s1 attempt=1
+[2026-04-21T18:29:16-04:00] OK    crl_rc20_s1 attempt=1 evals=200
+[2026-04-21T18:29:16-04:00] START crl_rc20_s2 attempt=1

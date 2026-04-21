@@ -1,0 +1,6 @@
+== 70m_b2 sweep started 2026-04-18T15:02:25-04:00 ==
+[2026-04-18T15:02:25-04:00] START crl_ema_goal_anneal10m_gated_reg1e-7_noema_s0 attempt=1
+[2026-04-18T15:50:55-04:00] OK    crl_ema_goal_anneal10m_gated_reg1e-7_noema_s0 attempt=1 evals=200
+[2026-04-18T15:50:55-04:00] START crl_ema_goal_anneal10m_gated_reg1e-7_noema_s1 attempt=1
+[2026-04-18T16:39:31-04:00] OK    crl_ema_goal_anneal10m_gated_reg1e-7_noema_s1 attempt=1 evals=200
+[2026-04-18T16:39:31-04:00] START crl_ema_goal_anneal10m_gated_reg1e-7_noema_s2 attempt=1

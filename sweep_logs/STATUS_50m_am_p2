@@ -1,0 +1,10 @@
+== 50m_am phase 2 sweep started 2026-04-20T15:32:41-04:00 (threshold=20.0) ==
+[2026-04-20T15:32:41-04:00] START crl_ema_goal_am50_reg1e-7_s0 attempt=1
+[2026-04-20T16:27:23-04:00] OK    crl_ema_goal_am50_reg1e-7_s0 attempt=1 evals=200
+[2026-04-20T16:27:23-04:00] START crl_ema_goal_am50_reg1e-7_s1 attempt=1
+[2026-04-20T17:22:15-04:00] OK    crl_ema_goal_am50_reg1e-7_s1 attempt=1 evals=200
+[2026-04-20T17:22:15-04:00] START crl_ema_goal_am50_reg1e-7_s2 attempt=1
+[2026-04-20T18:16:57-04:00] OK    crl_ema_goal_am50_reg1e-7_s2 attempt=1 evals=200
+[2026-04-20T18:16:57-04:00] START crl_ema_goal_am50_reg1e-7_s3 attempt=1
+[2026-04-20T19:11:34-04:00] OK    crl_ema_goal_am50_reg1e-7_s3 attempt=1 evals=200
+== 50m_am phase 2 sweep finished 2026-04-20T19:11:34-04:00 ==

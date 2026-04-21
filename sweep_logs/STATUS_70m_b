@@ -1,0 +1,17 @@
+== 70m_b sweep started 2026-04-18T09:49:19-04:00 ==
+[2026-04-18T09:49:19-04:00] START crl_ema_ab70_s0 attempt=1
+[2026-04-18T10:30:41-04:00] OK    crl_ema_ab70_s0 attempt=1 evals=200
+[2026-04-18T10:30:41-04:00] START crl_ema_goal_anneal10m_gated_reg1e-7_s1 attempt=1
+[2026-04-18T11:18:56-04:00] OK    crl_ema_goal_anneal10m_gated_reg1e-7_s1 attempt=1 evals=200
+[2026-04-18T11:18:56-04:00] START crl_ema_ab70_s1 attempt=1
+[2026-04-18T12:01:18-04:00] OK    crl_ema_ab70_s1 attempt=1 evals=200
+[2026-04-18T12:01:18-04:00] START crl_ema_goal_anneal10m_gated_reg1e-7_s2 attempt=1
+[2026-04-18T12:49:33-04:00] OK    crl_ema_goal_anneal10m_gated_reg1e-7_s2 attempt=1 evals=200
+[2026-04-18T12:49:33-04:00] START crl_ema_ab70_s2 attempt=1
+[2026-04-18T13:31:20-04:00] OK    crl_ema_ab70_s2 attempt=1 evals=200
+[2026-04-18T13:31:20-04:00] START crl_ema_goal_anneal10m_gated_reg1e-7_s3 attempt=1
+[2026-04-18T14:19:46-04:00] OK    crl_ema_goal_anneal10m_gated_reg1e-7_s3 attempt=1 evals=200
+[2026-04-18T14:19:46-04:00] START crl_ema_ab70_s3 attempt=1
+[2026-04-18T15:02:25-04:00] OK    crl_ema_ab70_s3 attempt=1 evals=200
+== 70m_b sweep finished 2026-04-18T15:02:25-04:00 ==
+[2026-04-18T15:02:25-04:00] CHAIN launching run_sweep_70m_b2.sh

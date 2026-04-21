@@ -1,0 +1,4 @@
+== sweep started 2026-04-16T08:40:00-04:00 ==
+[2026-04-16T08:40:00-04:00] START crl_ab_s0 attempt=1
+[2026-04-16T09:10:08-04:00] FAIL  crl_ab_s0 attempt=1 rc=1 (see /home/saga/reflearn/crl/JaxGCRL/sweep_logs/crl_ab_s0.attempt1.log)
+[2026-04-16T09:10:08-04:00] RETRY crl_ab_s0 waiting 120s before attempt 2

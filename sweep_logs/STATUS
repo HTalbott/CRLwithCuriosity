@@ -1,0 +1,22 @@
+== sweep started 2026-04-16T11:45:45-04:00 ==
+[2026-04-16T11:45:45-04:00] START crl_ab_s0 attempt=1
+[2026-04-16T12:16:41-04:00] OK    crl_ab_s0 attempt=1
+[2026-04-16T12:16:41-04:00] START crl_ema_goal_ab_s0 attempt=1
+[2026-04-16T12:51:06-04:00] OK    crl_ema_goal_ab_s0 attempt=1
+[2026-04-16T12:51:06-04:00] START crl_ema_goal_temp_ab_s0 attempt=1
+[2026-04-16T13:25:27-04:00] OK    crl_ema_goal_temp_ab_s0 attempt=1
+[2026-04-16T13:25:27-04:00] START crl_teammate_ab_s0 attempt=1
+[2026-04-16T13:56:59-04:00] OK    crl_teammate_ab_s0 attempt=1
+[2026-04-16T13:56:59-04:00] START crl_ema_goal_ab_s1 attempt=1
+[2026-04-16T14:30:11-04:00] OK    crl_ema_goal_ab_s1 attempt=1
+[2026-04-16T14:30:11-04:00] START crl_ema_goal_ab_s2 attempt=1
+[2026-04-16T15:03:35-04:00] OK    crl_ema_goal_ab_s2 attempt=1
+[2026-04-16T15:03:35-04:00] START crl_ema_goal_temp_ab_s1 attempt=1
+[2026-04-16T15:37:01-04:00] OK    crl_ema_goal_temp_ab_s1 attempt=1
+[2026-04-16T15:37:01-04:00] START crl_ema_goal_temp_ab_s2 attempt=1
+[2026-04-16T16:10:35-04:00] OK    crl_ema_goal_temp_ab_s2 attempt=1
+[2026-04-16T16:10:35-04:00] START crl_ab_s1 attempt=1
+[2026-04-16T16:40:43-04:00] OK    crl_ab_s1 attempt=1
+[2026-04-16T16:40:43-04:00] START crl_ab_s2 attempt=1
+[2026-04-16T17:11:16-04:00] OK    crl_ab_s2 attempt=1
+== sweep finished 2026-04-16T17:11:16-04:00 ==

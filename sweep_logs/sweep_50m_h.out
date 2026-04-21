@@ -1,0 +1,1 @@
+/home/saga/reflearn/crl/JaxGCRL/sweep_logs/run_sweep_50m_h.sh: line 26: 97527 Segmentation fault      (core dumped) jaxgcrl "$agent" --env "$ENV" --total-env-steps "$STEPS" --seed "$seed" --exp-name "$exp" --wandb-group "$GROUP" > "$log" 2>&1
