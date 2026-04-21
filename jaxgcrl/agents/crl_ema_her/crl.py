@@ -21,7 +21,7 @@ from jaxgcrl.envs.wrappers import TrajectoryIdWrapper
 from jaxgcrl.utils.evaluator import ActorEvaluator
 from jaxgcrl.utils.replay_buffer import TrajectoryUniformSamplingQueue
 
-from .losses import update_actor_and_alpha, update_critic, update_goal_critic
+from .losses import update_actor_and_alpha, update_critic
 from .networks import Actor, Encoder
 
 Metrics = types.Metrics
@@ -39,11 +39,7 @@ class TrainingState:
     critic_state: TrainState
     alpha_state: TrainState
     target_critic_params: Any
-    goal_critic_state: TrainState
-    target_goal_critic_params: Any
-    goal_logit_mean_ema: jnp.ndarray
-    goal_logit_var_ema: jnp.ndarray
-    goal_warmup_met_step: jnp.ndarray
+    buffer_success_ema: jnp.ndarray
 
 
 class Transition(NamedTuple):
@@ -56,9 +52,16 @@ class Transition(NamedTuple):
     extras: jnp.ndarray = ()
 
 
-@functools.partial(jax.jit, static_argnames=("buffer_config"))
-def flatten_batch(buffer_config, transition, sample_key):
-    gamma, state_size, goal_indices, goal_reach_thresh = buffer_config
+@functools.partial(jax.jit, static_argnames=("buffer_config",))
+def flatten_batch(buffer_config, transition, sample_key, her_fraction_eff):
+    """CRL flatten with optional hindsight (HER) goal anchoring.
+
+    For each source timestep, with probability `her_fraction_eff`, replace the
+    geometrically sampled future goal with the first future timestep in the
+    same trajectory where `reward > 0.5` (success fires; ant_ball sparse reward
+    is exactly the success indicator). Falls back to the geometric sample if
+    no future success exists. `her_fraction_eff=0` recovers vanilla CRL."""
+    gamma, state_size, goal_indices = buffer_config
 
     seq_len = transition.observation.shape[0]
     arrangement = jnp.arange(seq_len)
@@ -72,38 +75,35 @@ def flatten_batch(buffer_config, transition, sample_key):
         [transition.extras["state_extras"]["traj_id"][:, jnp.newaxis].T] * seq_len,
         axis=0,
     )
+    same_traj = jnp.equal(single_trajectories, single_trajectories.T).astype(jnp.float32)
 
-    probs = probs * jnp.equal(single_trajectories, single_trajectories.T) + jnp.eye(seq_len) * 1e-5
+    probs = probs * same_traj + jnp.eye(seq_len) * 1e-5
 
-    goal_index = jax.random.categorical(sample_key, jnp.log(probs))
+    cat_key, her_key = jax.random.split(sample_key, 2)
+    goal_index = jax.random.categorical(cat_key, jnp.log(probs))
+
+    success_step = (transition.reward > 0.5).astype(jnp.float32)
+    her_candidates = is_future_mask * same_traj * success_step[None, :]
+    has_her = jnp.any(her_candidates > 0, axis=1)
+    her_goal_index = jnp.argmax(her_candidates, axis=1)
+
+    coin = jax.random.uniform(her_key, shape=(seq_len,)) < her_fraction_eff
+    use_her = coin & has_her
+    final_goal_index = jnp.where(use_her, her_goal_index, goal_index)
+
+    # Drop-mask: in a successful trajectory, drop rows with no future success.
+    # In an unsuccessful trajectory, keep all rows (vanilla CRL behavior).
+    traj_has_success = jnp.any(success_step > 0.5)
+    valid_mask = (~traj_has_success) | has_her
+
     future_state = jnp.take(
-        transition.observation, goal_index[:-1], axis=0
+        transition.observation, final_goal_index[:-1], axis=0
     )
-    future_action = jnp.take(transition.action, goal_index[:-1], axis=0)
+    future_action = jnp.take(transition.action, final_goal_index[:-1], axis=0)
     goal = future_state[:, goal_indices]
     future_state = future_state[:, :state_size]
     state = transition.observation[:-1, :state_size]
     new_obs = jnp.concatenate([state, goal], axis=1)
-
-    # Compute episode-level success per trajectory:
-    # Each timestep's commanded goal is the goal part of its own observation.
-    # Success = did any timestep in the SAME trajectory reach within threshold?
-    traj_ids = transition.extras["state_extras"]["traj_id"]  # (seq_len,)
-    commanded_goals = transition.observation[:, state_size:]  # (seq_len, goal_size)
-    agent_positions = transition.observation[:, goal_indices]  # (seq_len, goal_size)
-    distances = jnp.sqrt(
-        jnp.sum((agent_positions - commanded_goals) ** 2, axis=-1) + 1e-6
-    )  # (seq_len,)
-    reached = (distances < goal_reach_thresh).astype(jnp.float32)  # (seq_len,)
-
-    # For each timestep, check if ANY timestep in the same trajectory reached the goal
-    same_traj = jnp.equal(traj_ids[:, None], traj_ids[None, :])  # (seq_len, seq_len)
-    # episode_success[i] = max over j where traj_id[j] == traj_id[i] of reached[j]
-    episode_success_full = jnp.max(same_traj * reached[None, :], axis=-1)  # (seq_len,)
-
-    # Slice to (seq_len - 1,) to match other per-step arrays
-    episode_success_per_step = episode_success_full[:-1]
-    commanded_goal_per_step = commanded_goals[:-1]
 
     extras = {
         "policy_extras": {},
@@ -114,8 +114,8 @@ def flatten_batch(buffer_config, transition, sample_key):
         "state": state,
         "future_state": future_state,
         "future_action": future_action,
-        "commanded_goal": commanded_goal_per_step,
-        "episode_success": episode_success_per_step,
+        "her_used": use_her[:-1].astype(jnp.float32),
+        "valid_mask": valid_mask[:-1].astype(jnp.float32),
     }
 
     return transition._replace(
@@ -140,13 +140,15 @@ def save_params(path: str, params: Any):
 
 
 @dataclass
-class CRL_EMA_GOAL:
-    """CRL with EMA-smoothed critic and a goal-conditioned critic.
+class CRL_EMA_HER:
+    """CRL+EMA with hindsight (HER) goal anchoring on a fraction of minibatch rows.
 
-    Adds a second critic that directly predicts whether the agent will reach
-    the commanded goal, trained on episode-level success labels from the replay
-    buffer.  The goal critic is frozen for the first ``goal_critic_warmup_steps``
-    env steps, then its energy is added to the actor loss."""
+    Extends CRL_EMA (Polyak target critic for the actor loss) by replacing a
+    configurable fraction of the geometrically sampled future-state goals with
+    the *first future success step in the same trajectory* (where success =
+    reward > 0.5 — ant_ball-style sparse reward). The HER replacement is only
+    active once an EMA of the buffer-local success rate exceeds a threshold
+    (otherwise: equivalent to plain CRL_EMA)."""
 
     policy_lr: float = 3e-4
     critic_lr: float = 3e-4
@@ -179,43 +181,16 @@ class CRL_EMA_GOAL:
     ema_tau: float = 0.005
     """EMA smoothing coefficient. target = tau * online + (1 - tau) * target."""
 
-    goal_critic_lr: float = 3e-4
-    """Learning rate for the goal-conditioned critic."""
+    her_fraction: float = 0.2
+    """Fraction of source timesteps whose goal is replaced with the first future
+    success step (conditional on such a step existing and HER being gated on)."""
 
-    goal_critic_warmup_steps: int = 5_000_000
-    """Skip goal critic training before this many env steps. Actor contribution
-    begins annealing in at this point."""
+    her_success_threshold: float = 0.1
+    """HER activates once the EMA of per-trajectory success rate in sampled
+    buffer batches exceeds this threshold."""
 
-    goal_critic_anneal_end_steps: int = 8_000_000
-    """Goal critic weight in actor loss reaches full strength at this step."""
-
-    goal_critic_coeff: float = 1.0
-    """Weight of goal critic energy in the actor loss (at full strength)."""
-
-    goal_reach_thresh: float = 0.5
-    """Distance threshold for goal success (matches env's goal_reach_thresh)."""
-
-    goal_positive_weight_cap: float = 4.0
-    """Maximum weight for positive examples in goal critic loss."""
-
-    goal_logit_clamp: float = 4.0
-    """Absolute value for symmetric clamp on goal logit in actor loss: clip to [-v, v]."""
-
-    goal_logit_clamp_min: float = -1e9
-    """Optional lower bound for goal logit clamp; overrides -goal_logit_clamp when > -1e8."""
-
-    goal_norm_decay: float = 0.99
-    """EMA decay for running mean/var of goal logits used in actor loss normalization."""
-
-    goal_logit_reg: float = 0.0
-    """L2 penalty coefficient on raw goal-critic logits; discourages extreme confidence."""
-
-    goal_warmup_metric: str = ""
-    """Eval metric name to gate goal critic activation (e.g. 'eval/episode_success').
-    Empty string disables metric gating and uses step-based warmup only."""
-
-    goal_warmup_threshold: float = 0.05
-    """Minimum value of goal_warmup_metric before goal critic activates."""
+    her_buffer_success_decay: float = 0.99
+    """Decay for the EMA of buffer-local success rate. Higher = smoother."""
 
     def check_config(self, config):
         assert config.num_envs * (config.episode_length - 1) % self.batch_size == 0, (
@@ -273,9 +248,7 @@ class CRL_EMA_GOAL:
         random.seed(config.seed)
         np.random.seed(config.seed)
         key = jax.random.PRNGKey(config.seed)
-        key, buffer_key, eval_env_key, env_key, actor_key, sa_key, g_key, goal_key = (
-            jax.random.split(key, 8)
-        )
+        key, buffer_key, eval_env_key, env_key, actor_key, sa_key, g_key = jax.random.split(key, 7)
 
         env_keys = jax.random.split(env_key, config.num_envs)
         env_state = jax.jit(train_env.reset)(env_keys)
@@ -302,7 +275,7 @@ class CRL_EMA_GOAL:
             tx=optax.adam(learning_rate=self.policy_lr),
         )
 
-        # CRL Critic
+        # Critic
         sa_encoder = Encoder(
             repr_dim=self.repr_dim,
             network_width=self.h_dim,
@@ -328,26 +301,8 @@ class CRL_EMA_GOAL:
             tx=optax.adam(learning_rate=self.critic_lr),
         )
 
+        # Initialize target critic params as copy of critic params
         target_critic_params = jax.tree_util.tree_map(jnp.copy, critic_params)
-
-        # Goal Critic: single MLP binary classifier, (state, action, goal) → logit
-        goal_critic = Encoder(
-            repr_dim=1,
-            network_width=self.h_dim,
-            network_depth=self.n_hidden,
-            skip_connections=self.skip_connections,
-            use_relu=self.use_relu,
-            use_ln=self.use_ln,
-        )
-        goal_critic_params = goal_critic.init(goal_key, np.ones([1, state_size + action_size + goal_size]))
-        goal_critic_state = TrainState.create(
-            apply_fn=goal_critic.apply,
-            params=goal_critic_params,
-            tx=optax.adam(learning_rate=self.goal_critic_lr),
-        )
-
-        # Initialize target goal critic params as copy
-        target_goal_critic_params = jax.tree_util.tree_map(jnp.copy, goal_critic_params)
 
         # Entropy coefficient
         target_entropy = -0.5 * action_size
@@ -365,11 +320,7 @@ class CRL_EMA_GOAL:
             critic_state=critic_state,
             alpha_state=alpha_state,
             target_critic_params=target_critic_params,
-            goal_critic_state=goal_critic_state,
-            target_goal_critic_params=target_goal_critic_params,
-            goal_logit_mean_ema=jnp.zeros(()),
-            goal_logit_var_ema=jnp.ones(()),
-            goal_warmup_met_step=jnp.array(1e12 if self.goal_warmup_metric else 0.0),
+            buffer_success_ema=jnp.zeros(()),
         )
 
         # Replay Buffer
@@ -477,7 +428,7 @@ class CRL_EMA_GOAL:
         @jax.jit
         def update_networks(carry, transitions):
             training_state, key = carry
-            key, critic_key, actor_key, goal_critic_key = jax.random.split(key, 4)
+            key, critic_key, actor_key = jax.random.split(key, 3)
 
             context = dict(
                 **vars(self),
@@ -494,7 +445,6 @@ class CRL_EMA_GOAL:
                 actor=actor,
                 sa_encoder=sa_encoder,
                 g_encoder=g_encoder,
-                goal_critic=goal_critic,
             )
 
             training_state, actor_metrics = update_actor_and_alpha(
@@ -503,15 +453,13 @@ class CRL_EMA_GOAL:
             training_state, critic_metrics = update_critic(
                 context, networks, transitions, training_state, critic_key
             )
-            training_state, goal_critic_metrics = update_goal_critic(
-                context, networks, transitions, training_state, goal_critic_key
-            )
             training_state = training_state.replace(gradient_steps=training_state.gradient_steps + 1)
 
             metrics = {}
             metrics.update(actor_metrics)
             metrics.update(critic_metrics)
-            metrics.update(goal_critic_metrics)
+            metrics["her_used_frac"] = jnp.mean(transitions.extras["her_used"])
+            metrics["valid_count_frac"] = jnp.mean(transitions.extras["valid_mask"])
 
             return (training_state, key), metrics
 
@@ -532,11 +480,27 @@ class CRL_EMA_GOAL:
 
             buffer_state, transitions = replay_buffer.sample(buffer_state)
 
+            episode_success_any = jnp.any(transitions.reward > 0.5, axis=1).astype(jnp.float32)
+            batch_success_rate = jnp.mean(episode_success_any)
+            decay = self.her_buffer_success_decay
+            new_buffer_success_ema = (
+                decay * training_state.buffer_success_ema + (1.0 - decay) * batch_success_rate
+            )
+            training_state = training_state.replace(buffer_success_ema=new_buffer_success_ema)
+
+            her_gate = (new_buffer_success_ema > self.her_success_threshold).astype(jnp.float32)
+            # Boost per-row coin probability so the overall HER rate hits her_fraction
+            # when possible, capped at 1.0 (i.e. HER rate = min(her_fraction, buffer_success_rate)).
+            her_fraction_eff = jnp.clip(
+                self.her_fraction / (new_buffer_success_ema + 1e-6), 0.0, 1.0
+            ) * her_gate
+
             batch_keys = jax.random.split(sampling_key, transitions.observation.shape[0])
-            transitions = jax.vmap(flatten_batch, in_axes=(None, 0, 0))(
-                (self.discounting, state_size, goal_indices_static, self.goal_reach_thresh),
+            transitions = jax.vmap(flatten_batch, in_axes=(None, 0, 0, None))(
+                (self.discounting, state_size, goal_indices_static),
                 transitions,
                 batch_keys,
+                her_fraction_eff,
             )
             transitions = jax.tree_util.tree_map(
                 lambda x: jnp.reshape(x, (-1,) + x.shape[2:], order="F"), transitions
@@ -555,6 +519,7 @@ class CRL_EMA_GOAL:
 
             return (training_state, env_state, buffer_state), metrics
 
+        @jax.jit
         @jax.jit
         def _scan_body(carry, unused_t):
             ts, es, bs, k = carry
@@ -577,6 +542,10 @@ class CRL_EMA_GOAL:
             )
 
             metrics["buffer_current_size"] = replay_buffer.size(buffer_state)
+            metrics["buffer_success_ema"] = training_state.buffer_success_ema
+            metrics["her_gate"] = (
+                training_state.buffer_success_ema > self.her_success_threshold
+            ).astype(jnp.float32)
             return training_state, env_state, buffer_state, metrics
 
         key, prefill_key = jax.random.split(key, 2)
@@ -627,24 +596,6 @@ class CRL_EMA_GOAL:
             current_step = int(training_state.env_steps.item())
 
             metrics = evaluator.run_evaluation(training_state, metrics)
-
-            # Performance-gated goal critic warmup
-            if (
-                self.goal_warmup_metric
-                and self.goal_warmup_metric in metrics
-                and float(training_state.goal_warmup_met_step) > 1e11
-            ):
-                metric_val = float(metrics[self.goal_warmup_metric])
-                if metric_val >= self.goal_warmup_threshold:
-                    logging.info(
-                        "goal warmup threshold met: %s=%.4f >= %.4f at step %d",
-                        self.goal_warmup_metric, metric_val,
-                        self.goal_warmup_threshold, current_step,
-                    )
-                    training_state = training_state.replace(
-                        goal_warmup_met_step=jnp.array(float(current_step)),
-                    )
-
             logging.info("step: %d", current_step)
 
             do_render = ne % config.visualization_interval == 0
@@ -660,13 +611,13 @@ class CRL_EMA_GOAL:
             )
 
             if config.checkpoint_logdir:
-                ckpt_params = (
+                params = (
                     training_state.alpha_state.params,
                     training_state.actor_state.params,
                     training_state.critic_state.params,
                 )
                 path = f"{config.checkpoint_logdir}/step_{int(training_state.env_steps)}.pkl"
-                save_params(path, ckpt_params)
+                save_params(path, params)
 
         total_steps = current_step
         assert total_steps >= config.total_env_steps

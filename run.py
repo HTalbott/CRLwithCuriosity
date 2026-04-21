@@ -94,6 +94,8 @@ def main(config: Config):
         "training/contrastive_accuracy",
         "training/critic_loss",
         "training/categorical_accuracy",
+        "training/logits_pos",
+        "training/logits_neg",
         "training/crl_actor_loss",
         "training/hard_pos_weight_ess",
         "training/hard_pos_weight_max",
@@ -111,6 +113,17 @@ def main(config: Config):
         "training/goal_mean_logit_pos",
         "training/goal_mean_logit_neg",
         "training/goal_pred_positive_rate",
+        "training/crl_temperature",
+        "training/crl_log_temp",
+        "training/goal_temperature",
+        "training/goal_log_temp",
+        "training/goal_advantage",
+        "training/goal_logit_mean_ema",
+        "training/goal_logit_var_ema",
+        "training/buffer_success_ema",
+        "training/her_gate",
+        "training/her_used_frac",
+        "training/valid_count_frac",
     ]
 
     metrics_recorder = MetricsRecorder(

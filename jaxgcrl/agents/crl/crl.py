@@ -589,17 +589,22 @@ class CRL:
 
             if config.checkpoint_logdir:
                 # Save current policy and critic params.
-                params = (
+                ckpt_params = (
                     training_state.alpha_state.params,
                     training_state.actor_state.params,
                     training_state.critic_state.params,
                 )
                 path = f"{config.checkpoint_logdir}/step_{int(training_state.env_steps)}.pkl"
-                save_params(path, params)
+                save_params(path, ckpt_params)
 
         total_steps = current_step
         assert total_steps >= config.total_env_steps
 
         logging.info("total steps: %s", total_steps)
 
+        params = (
+            training_state.alpha_state.params,
+            training_state.actor_state.params,
+            training_state.critic_state.params,
+        )
         return make_policy, params, metrics

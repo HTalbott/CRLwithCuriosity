@@ -41,9 +41,8 @@ class TrainingState:
     target_critic_params: Any
     goal_critic_state: TrainState
     target_goal_critic_params: Any
-    goal_logit_mean_ema: jnp.ndarray
-    goal_logit_var_ema: jnp.ndarray
-    goal_warmup_met_step: jnp.ndarray
+    temp_state: TrainState
+    goal_temp_state: TrainState
 
 
 class Transition(NamedTuple):
@@ -140,8 +139,9 @@ def save_params(path: str, params: Any):
 
 
 @dataclass
-class CRL_EMA_GOAL:
-    """CRL with EMA-smoothed critic and a goal-conditioned critic.
+class CRL_EMA_GOAL_TEMP:
+    """CRL_EMA_GOAL with learnable log-temperature (CLIP-style) on both
+    the contrastive critic and the goal critic.
 
     Adds a second critic that directly predicts whether the agent will reach
     the commanded goal, trained on episode-level success labels from the replay
@@ -204,18 +204,12 @@ class CRL_EMA_GOAL:
     goal_logit_clamp_min: float = -1e9
     """Optional lower bound for goal logit clamp; overrides -goal_logit_clamp when > -1e8."""
 
-    goal_norm_decay: float = 0.99
-    """EMA decay for running mean/var of goal logits used in actor loss normalization."""
+    learn_temperature: bool = False
+    """If True, learn log-temperatures for both the CRL contrastive loss and
+    the goal-critic BCE loss (CLIP-style: grad flows directly through each loss)."""
 
-    goal_logit_reg: float = 0.0
-    """L2 penalty coefficient on raw goal-critic logits; discourages extreme confidence."""
-
-    goal_warmup_metric: str = ""
-    """Eval metric name to gate goal critic activation (e.g. 'eval/episode_success').
-    Empty string disables metric gating and uses step-based warmup only."""
-
-    goal_warmup_threshold: float = 0.05
-    """Minimum value of goal_warmup_metric before goal critic activates."""
+    temp_lr: float = 3e-4
+    """Learning rate for the learnable log-temperatures."""
 
     def check_config(self, config):
         assert config.num_envs * (config.episode_length - 1) % self.batch_size == 0, (
@@ -358,6 +352,19 @@ class CRL_EMA_GOAL:
             tx=optax.adam(learning_rate=self.alpha_lr),
         )
 
+        # Learnable log-temperatures (init 0 => tau=1 => equivalent to no temperature)
+        log_temp = jnp.asarray(0.0, dtype=jnp.float32)
+        temp_state = TrainState.create(
+            apply_fn=None,
+            params={"log_temp": log_temp},
+            tx=optax.adam(learning_rate=self.temp_lr),
+        )
+        goal_temp_state = TrainState.create(
+            apply_fn=None,
+            params={"log_temp": jnp.asarray(0.0, dtype=jnp.float32)},
+            tx=optax.adam(learning_rate=self.temp_lr),
+        )
+
         training_state = TrainingState(
             env_steps=jnp.zeros(()),
             gradient_steps=jnp.zeros(()),
@@ -367,9 +374,8 @@ class CRL_EMA_GOAL:
             target_critic_params=target_critic_params,
             goal_critic_state=goal_critic_state,
             target_goal_critic_params=target_goal_critic_params,
-            goal_logit_mean_ema=jnp.zeros(()),
-            goal_logit_var_ema=jnp.ones(()),
-            goal_warmup_met_step=jnp.array(1e12 if self.goal_warmup_metric else 0.0),
+            temp_state=temp_state,
+            goal_temp_state=goal_temp_state,
         )
 
         # Replay Buffer
@@ -627,24 +633,6 @@ class CRL_EMA_GOAL:
             current_step = int(training_state.env_steps.item())
 
             metrics = evaluator.run_evaluation(training_state, metrics)
-
-            # Performance-gated goal critic warmup
-            if (
-                self.goal_warmup_metric
-                and self.goal_warmup_metric in metrics
-                and float(training_state.goal_warmup_met_step) > 1e11
-            ):
-                metric_val = float(metrics[self.goal_warmup_metric])
-                if metric_val >= self.goal_warmup_threshold:
-                    logging.info(
-                        "goal warmup threshold met: %s=%.4f >= %.4f at step %d",
-                        self.goal_warmup_metric, metric_val,
-                        self.goal_warmup_threshold, current_step,
-                    )
-                    training_state = training_state.replace(
-                        goal_warmup_met_step=jnp.array(float(current_step)),
-                    )
-
             logging.info("step: %d", current_step)
 
             do_render = ne % config.visualization_interval == 0
