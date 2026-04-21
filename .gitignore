@@ -319,3 +319,13 @@ experiments/
 notebooks/data/
 notebooks/figures/
 archive/
+
+# Editor backups
+*.bak
+
+# Training log artifacts (sweep_logs/*.sh scripts and STATUS files are kept)
+sweep_logs/*.log
+sweep_logs/*.log.*
+
+# Report generation cache (regenerable from wandb)
+results/report/_cache/
