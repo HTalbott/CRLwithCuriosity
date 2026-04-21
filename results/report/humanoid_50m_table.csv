@@ -1,0 +1,4 @@
+Variant,seed 0,seed 1,seed 2,seed 3,mean,std
+Vanilla CRL,8.17,9.07,7.17,8.3,8.18,0.78
+CRL+EMA,6.71,9.89,9.81,9.88,9.07,1.58
+CRL+EMA+Goal (reg=1e-7),7.97,9.0,8.73,7.71,8.35,0.61
